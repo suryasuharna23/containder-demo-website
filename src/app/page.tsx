@@ -5,18 +5,18 @@ import Kamera from "@/components/camera"; // Import komponen Kamera yang sudah k
 export default function HomePage() {
   return (
     <main className="relative w-full h-screen flex flex-col items-center justify-center bg-white font-sans">
-      <header className="flex top-0 left-0 w-full h-16 flex items-center pl-8">
+      <header className="relative top-0 left-0 w-full h-16 flex items-center pl-8">
         <h2>
-          <img src="/containder-logo.png" alt="Containder Logo" className="h-20 mt-10" />
+          <img src="/containder-logo.png" alt="Containder Logo" className="h-16 w-auto" />
         </h2>
       </header>
       {/* Kotak kamera seperti kamera HP */}
       {/* Elemen lain di atas kamera */}
-      <div className="mt-8 flex flex-col items-center text-black">
-        <h1 className="text-4xl md:text-6xl font-bold p-4 rounded-lg">
+      <div className="mt-2 w-full flex flex-col items-center text-black"> {/* <--- DITAMBAHKAN w-full DI SINI */}
+        <h1 className="text-4xl md:text-3xlxl font-bold p-4 rounded-lg">
           Welcome back!
         </h1>
-        <p className="mx-12 mb-10 max-w-xl w-full text-lg md:text-xl text-center p-4 rounded-lg bg-white shadow-lg">
+        <p className="mx-4 md:mx-12 mb-3 max-w-xl w-full text-sm md:text-base text-center p-4 rounded-lg bg-white shadow-lg">
           Our AI-driven technology revolutionizes plastic bottle sorting, minimizing landfill waste and maximizing resource recovery for a healthier planet.
         </p>
       </div>
