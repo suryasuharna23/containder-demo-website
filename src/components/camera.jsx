@@ -14,7 +14,9 @@ const Kamera = () => {
     const getCameraStream = async () => {
       try {
         // Meminta izin pengguna untuk mengakses video (kamera)
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" } } // gunakan kamera belakang
+        });
 
         // Jika ada elemen video dan kita berhasil mendapatkan stream
         if (videoRef.current) {
@@ -25,6 +27,13 @@ const Kamera = () => {
         // Tangani error jika pengguna menolak izin atau tidak ada kamera
         console.error("Error accessing camera: ", err);
         alert("Tidak dapat mengakses kamera. Pastikan Anda memberikan izin dan kamera terpasang.");
+
+        // fallback ke kamera depan jika kamera belakang tidak tersedia
+        navigator.mediaDevices.getUserMedia({ video: true }).then((stream) => {
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+          }
+        });
       }
     };
 
