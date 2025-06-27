@@ -1,18 +1,18 @@
-// src/app/page.js
+// src/app/page.tsx
 
-import Kamera from "@/components/camera"; // Import komponen Kamera yang sudah kita buat
+import Kamera from "@/components/camera"; // Import komponen Kamera
 
 export default function HomePage() {
   return (
-    <main className="relative w-full h-screen flex flex-col items-center justify-center bg-white font-sans">
+    // Mengubah layout agar halaman bisa di-scroll jika kontennya panjang
+    <main className="relative w-full min-h-screen flex flex-col items-center justify-start py-8 bg-white font-sans">
       <header className="relative top-0 left-0 w-full h-16 flex items-center pl-8">
         <h2>
           <img src="/containder-logo.png" alt="Containder Logo" className="h-16 w-auto" />
         </h2>
       </header>
-      {/* Kotak kamera seperti kamera HP */}
       {/* Elemen lain di atas kamera */}
-      <div className="mt-2 w-full flex flex-col items-center text-black"> {/* <--- DITAMBAHKAN w-full DI SINI */}
+      <div className="mt-2 w-full flex flex-col items-center text-black">
         <h1 className="text-4xl md:text-3xlxl font-bold p-4 rounded-lg">
           Welcome back!
         </h1>
@@ -20,10 +20,10 @@ export default function HomePage() {
           Our AI-driven technology revolutionizes plastic bottle sorting, minimizing landfill waste and maximizing resource recovery for a healthier planet.
         </p>
       </div>
-      <div className="relative rounded-xl overflow-hidden shadow-lg border-4 border-white" style={{ width: 320, height: 427 }}>
-        {/* Rasio 3:4, misal 320x427px */}
-        <Kamera />
-      </div>
+      
+      {/* Komponen Kamera dipanggil langsung tanpa div pembungkus yang membatasi tinggi */}
+      <Kamera />
+
     </main>
   );
 }

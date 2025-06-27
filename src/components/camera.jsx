@@ -1,6 +1,6 @@
 // src/components/Kamera.jsx
 
-"use client"; // Ini SANGAT PENTING!
+"use client";
 
 import { useEffect, useRef, useState } from 'react';
 
@@ -8,8 +8,7 @@ const Kamera = () => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [captured, setCaptured] = useState(null);
-  const [showView, setShowView] = useState(false);
-  const [showImage, setShowImage] = useState(false);
+  const [isDropdownOpen, setDropdownOpen] = useState(false);
 
   useEffect(() => {
     const getCameraStream = async () => {
@@ -45,19 +44,18 @@ const Kamera = () => {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
       const imageData = canvas.toDataURL('image/png');
       setCaptured(imageData);
-      setShowView(true);
-      setShowImage(false);
+      // Dropdown tidak terbuka otomatis, sesuai permintaan
     }
   };
 
-  const handleShowImage = () => {
-    setShowImage(true);
+  const toggleDropdown = () => {
+    setDropdownOpen(!isDropdownOpen);
   };
 
   return (
     <div className="flex flex-col items-center">
-      {/* Kamera box */}
-      <div className="relative w-[320px] h-[427px] bg-black rounded-xl overflow-hidden flex items-center justify-center">
+      {/* Kotak kamera */}
+      <div className="relative w-[320px] h-[427px] bg-black rounded-xl overflow-hidden flex items-center justify-center shadow-lg border-4 border-white">
         <video
           ref={videoRef}
           autoPlay
@@ -75,23 +73,47 @@ const Kamera = () => {
         </button>
         <canvas ref={canvasRef} style={{ display: 'none' }} />
       </div>
-      {/* Tombol lihat hasil di bawah kamera */}
-      {showView && (
+
+      {/* Dropdown untuk hasil foto, diletakkan di bawah kamera */}
+      <div className="w-full max-w-xs mt-4">
         <button
-          onClick={handleShowImage}
-          className="mt-8 px-6 py-2 bg-blue-600 text-white rounded-full shadow hover:bg-blue-700 transition"
+          onClick={toggleDropdown}
+          className="w-full px-4 py-2 bg-gray-200 text-left text-black rounded-md shadow-sm flex justify-between items-center"
         >
-          Lihat Hasil
+          <span>Hasil Foto</span>
+          <svg
+            className={`w-5 h-5 transform transition-transform ${
+              isDropdownOpen ? 'rotate-180' : ''
+            }`}
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              d="M19 9l-7 7-7-7"
+            ></path>
+          </svg>
         </button>
-      )}
-      {/* Gambar hasil capture */}
-      {showImage && captured && (
-        <img
-          src={captured}
-          alt="Hasil Capture"
-          className="mt-4 rounded-xl shadow-lg max-w-xs"
-        />
-      )}
+        {isDropdownOpen && (
+          <div className="mt-2 p-2 border border-gray-200 rounded-md shadow-lg bg-white">
+            {captured ? (
+              <img
+                src={captured}
+                alt="Hasil Capture"
+                className="rounded-md w-full"
+              />
+            ) : (
+              <p className="text-center text-gray-500 p-4">
+                Anda belum mengambil gambar.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 };
