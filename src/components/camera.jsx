@@ -9,6 +9,7 @@ const Kamera = () => {
   const canvasRef = useRef(null);
   const [captured, setCaptured] = useState(null);
   const [isDropdownOpen, setDropdownOpen] = useState(false);
+  const [result, setResult] = useState(null)
 
   useEffect(() => {
     const getCameraStream = async () => {
@@ -51,6 +52,20 @@ const Kamera = () => {
   const toggleDropdown = () => {
     setDropdownOpen(!isDropdownOpen);
   };
+
+  useEffect(()=> {
+    if (captured === null) return
+    const fetchData = async () => {
+      const res = await fetch('http://127.0.0.1:8000',{
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({image : captured})
+      });
+      const data = await res.json();
+      setResult(data); 
+    }
+    fetchData();
+  }, [captured]);
 
   return (
     <div className="flex flex-col items-center">
@@ -112,6 +127,11 @@ const Kamera = () => {
               </p>
             )}
           </div>
+        )}
+        {result && (
+          <p className='text-red-600'>
+            {JSON.stringify(result)}
+          </p>
         )}
       </div>
     </div>
