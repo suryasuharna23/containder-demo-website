@@ -1,29 +1,39 @@
-// src/app/page.tsx
-
-import Kamera from "@/components/camera"; // Import komponen Kamera
+import Kamera from "@/components/camera";
 
 export default function HomePage() {
   return (
-    // Mengubah layout agar halaman bisa di-scroll jika kontennya panjang
-    <main className="relative w-full min-h-screen flex flex-col items-center justify-start py-8 bg-white font-sans">
-      <header className="relative top-0 left-0 w-full h-16 flex items-center pl-8">
-        <h2>
-          <img src="/containder-logo.png" alt="Containder Logo" className="h-16 w-auto" />
-        </h2>
+    <main className="relative w-full min-h-screen flex flex-col bg-gradient-to-br from-blue-50 to-green-50 font-sans">
+      {/* Header dengan backdrop blur untuk efek modern */}
+      <header className="sticky top-0 z-50 w-full h-20 flex items-center px-6 md:px-8 bg-white/80 backdrop-blur-md border-b border-gray-200/50 shadow-sm">
+        <div className="flex items-center gap-3">
+          <img src="/containder-logo.png" alt="Containder Logo" className="h-12 w-auto" />
+          <div className="hidden md:block">
+            <h2 className="text-xl font-semibold text-gray-800">Containder</h2>
+            <p className="text-sm text-gray-600">AI Plastic Sorting</p>
+          </div>
+        </div>
       </header>
-      {/* Elemen lain di atas kamera */}
-      <div className="mt-2 w-full flex flex-col items-center text-black">
-        <h1 className="text-4xl md:text-3xlxl font-bold p-4 rounded-lg">
-          Welcome back!
-        </h1>
-        <p className="mx-4 md:mx-12 mb-3 max-w-xl w-full text-sm md:text-base text-center p-4 rounded-lg bg-white shadow-lg">
-          Our AI-driven technology revolutionizes plastic bottle sorting, minimizing landfill waste and maximizing resource recovery for a healthier planet.
-        </p>
-      </div>
-      
-      {/* Komponen Kamera dipanggil langsung tanpa div pembungkus yang membatasi tinggi */}
-      <Kamera />
 
+      {/* Content area dengan better spacing */}
+      <div className="flex-1 flex flex-col items-center justify-start py-8 px-4">
+        {/* Welcome section dengan animasi */}
+        <div className="w-full max-w-4xl text-center mb-8 animate-fade-in">
+          <h1 className="text-3xl md:text-4xl lg:text-5xl font-bold text-gray-800 mb-4">
+            Welcome back!
+          </h1>
+          <p className="mx-auto max-w-2xl text-sm md:text-base lg:text-lg text-gray-600 leading-relaxed px-6 py-4 bg-white rounded-2xl shadow-md border border-gray-100">
+            Our AI-driven technology revolutionizes plastic bottle sorting, minimizing landfill waste and maximizing resource recovery for a healthier planet.
+          </p>
+        </div>
+
+        {/* Camera component */}
+        <Kamera />
+      </div>
+
+      {/* Footer optional */}
+      <footer className="py-4 text-center text-xs text-gray-500 bg-white/50">
+        Powered by AI Technology
+      </footer>
     </main>
   );
 }
