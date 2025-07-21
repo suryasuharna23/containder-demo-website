@@ -30,7 +30,7 @@ class YOLOBottleDetector:
         
         # Check if YOLO is available
         if not YOLO_AVAILABLE:
-            print("❌ YOLO not available. Using fallback mode.")
+            print("YOLO not available. Using fallback mode.")
             self.device = 'none'
             self.model = None
             return
@@ -41,9 +41,9 @@ class YOLOBottleDetector:
         try:
             # Load model YOLO pre-trained
             self.model = YOLO(model_path)
-            print(f'✅ YOLO model loaded on {self.device}')
+            print(f'YOLO model loaded on {self.device}')
         except Exception as e:
-            print(f'❌ Error loading YOLO model: {e}')
+            print(f'Error loading YOLO model: {e}')
             self.model = None
     
     def detect_bottles(self, image: np.ndarray) -> List[dict]:
@@ -55,7 +55,7 @@ class YOLOBottleDetector:
             List berisi data deteksi botol
         """
         if not YOLO_AVAILABLE or self.model is None:
-            print("⚠️ YOLO model not available, returning empty detections")
+            print("YOLO model not available, returning empty detections")
             return []
         
         try:
@@ -86,7 +86,7 @@ class YOLOBottleDetector:
             return detections
             
         except Exception as e:
-            print(f'❌ Error in YOLO detection: {e}')
+            print(f'Error in YOLO detection: {e}')
             return []
     
     def get_best_detection(self, detections: List[dict]) -> Optional[dict]:

@@ -1,244 +1,392 @@
 # File: backend/hybrid-detection/src/image_processing/size_calculator.py
-# Fungsi: Menghitung ukuran botol menggunakan reference object (kotak hitam)
+# Fungsi: Menghitung ukuran botol berdasarkan pengukuran kontur nyata
 import cv2
 import numpy as np
 import math
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 class OpenCVSizeCalculator:
-    """Class untuk menghitung ukuran botol dengan OpenCV menggunakan kotak hitam referensi"""
+    """Class untuk menghitung ukuran botol dengan pengukuran kontur OpenCV"""
     
-    def __init__(self, reference_width_cm: float = 5.0):
+    def __init__(self, pixels_per_cm_base: float = 10.0):
         """
         Args:
-            reference_width_cm: Ukuran real reference object (kotak hitam) dalam cm
+            pixels_per_cm_base: Base conversion rate (akan dikalibrasi otomatis)
         """
-        self.reference_width_cm = reference_width_cm
+        self.pixels_per_cm_base = pixels_per_cm_base
     
-    def find_reference_object(self, image: np.ndarray) -> Optional[dict]:
+    def extract_bottle_contour(self, image: np.ndarray, yolo_bbox: list) -> Optional[dict]:
         """
-        Cari reference object (kotak hitam) dalam gambar untuk kalibrasi
+        Ekstrak kontur botol dalam area YOLO dengan analisis detail
         Args:
-            image: Gambar input
+            image: Gambar original
+            yolo_bbox: Bounding box dari YOLO [x1, y1, x2, y2]
         Returns:
-            Dict berisi data reference object dan pixels-per-metric
+            Dict berisi data kontur dan pengukuran detail
         """
         try:
-            # Convert ke grayscale
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            x1, y1, x2, y2 = yolo_bbox
             
-            # Untuk objek hitam, kita pakai pendekatan berbeda
-            # 1. Coba dengan thresholding untuk isolasi objek gelap
-            _, thresh1 = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)  # Objek gelap jadi putih
+            # Potong area ROI dari deteksi YOLO
+            roi = image[y1:y2, x1:x2]
             
-            # 2. Morphological operations untuk cleanup
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-            thresh1 = cv2.morphologyEx(thresh1, cv2.MORPH_CLOSE, kernel)
-            thresh1 = cv2.morphologyEx(thresh1, cv2.MORPH_OPEN, kernel)
+            if roi.size == 0:
+                return None
+                
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             
-            # 3. Coba juga dengan edge detection yang lebih sensitif
-            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-            edges = cv2.Canny(blurred, 30, 100)  # Lower threshold untuk objek gelap
+            # Multiple preprocessing untuk deteksi kontur yang lebih akurat
             
-            # 4. Kombinasi kedua metode
-            combined = cv2.bitwise_or(thresh1, edges)
+            # 1. Gaussian blur untuk noise reduction
+            blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
             
-            # 5. Morphological operations lagi untuk memperbaiki hasil
-            kernel2 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel2)
+            # 2. Multiple thresholding approaches
+            # Otsu thresholding
+            _, thresh_otsu = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             
-            print("🔍 Searching for black reference box...")
+            # Adaptive thresholding
+            thresh_adaptive = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                                   cv2.THRESH_BINARY, 11, 2)
             
-            # 6. Cari kontur dari hasil kombinasi
-            contours, _ = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # 3. Edge detection dengan multiple parameters
+            edges1 = cv2.Canny(blurred, 50, 150)
+            edges2 = cv2.Canny(blurred, 30, 100)
+            
+            # 4. Kombinasi semua metode
+            combined = cv2.bitwise_or(thresh_otsu, thresh_adaptive)
+            combined = cv2.bitwise_or(combined, edges1)
+            combined = cv2.bitwise_or(combined, edges2)
+            
+            # 5. Morphological operations untuk cleanup
+            kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            
+            combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_close)
+            combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel_open)
+            
+            # 6. Cari kontur
+            contours, hierarchy = cv2.findContours(combined, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if not contours:
-                print("⚠️ No contours found")
                 return None
             
-            # 7. Filter kontur untuk mencari kotak hitam
-            valid_boxes = []
-            
+            # 7. Filter dan pilih kontur terbaik
+            valid_contours = []
             for contour in contours:
-                # Hitung area kontur
                 area = cv2.contourArea(contour)
+                perimeter = cv2.arcLength(contour, True)
                 
-                # Filter berdasarkan area (kotak tidak terlalu kecil/besar)
-                if area < 800 or area > 50000:  # Adjust range untuk kotak hitam
+                # Filter berdasarkan area minimum
+                if area < 500:
                     continue
                 
-                # Approximate kontur ke polygon
-                epsilon = 0.02 * cv2.arcLength(contour, True)
-                approx = cv2.approxPolyDP(contour, epsilon, True)
+                # Hitung circularity untuk filter noise
+                if perimeter > 0:
+                    circularity = 4 * math.pi * area / (perimeter * perimeter)
+                    if circularity < 0.1:  # Terlalu tidak beraturan
+                        continue
                 
-                # Cek apakah bentuknya mendekati persegi (4 sudut)
-                if len(approx) >= 4 and len(approx) <= 8:  # Lebih toleran untuk kotak hitam
-                    # Hitung bounding rectangle
-                    x, y, w, h = cv2.boundingRect(approx)
-                    
-                    # Cek aspect ratio (mendekati persegi)
-                    aspect_ratio = float(w) / h
-                    
-                    # Toleransi untuk persegi: ratio antara 0.6 - 1.6 (lebih toleran)
-                    if 0.6 <= aspect_ratio <= 1.6:
-                        # Cek apakah area cukup solid (untuk objek hitam)
-                        contour_area = cv2.contourArea(contour)
-                        bbox_area = w * h
-                        solidity = contour_area / bbox_area
-                        
-                        # Filter objek yang cukup solid
-                        if solidity >= 0.6:  # Minimal 60% solid
-                            valid_boxes.append({
-                                'contour': approx,
-                                'bbox': (x, y, w, h),
-                                'area': contour_area,
-                                'aspect_ratio': aspect_ratio,
-                                'solidity': solidity,
-                                'center': (x + w//2, y + h//2)
-                            })
+                valid_contours.append((contour, area))
             
-            if not valid_boxes:
-                print("⚠️ No valid black boxes found")
+            if not valid_contours:
                 return None
             
-            # 8. Pilih kotak terbaik (berdasarkan aspek ratio mendekati 1 dan area sedang)
-            best_box = None
-            best_score = 0
+            # Ambil kontur terbesar yang valid
+            largest_contour = max(valid_contours, key=lambda x: x[1])[0]
             
-            for box in valid_boxes:
-                # Score berdasarkan seberapa mendekati persegi + area yang reasonable
-                aspect_score = 1 - abs(1 - box['aspect_ratio'])  # Semakin mendekati 1, semakin baik
-                area_score = min(box['area'] / 5000, 1)  # Normalize area score
-                solidity_score = box['solidity']
-                
-                total_score = (aspect_score * 0.4) + (area_score * 0.3) + (solidity_score * 0.3)
-                
-                if total_score > best_score:
-                    best_score = total_score
-                    best_box = box
+            # 8. Adjust koordinat kembali ke gambar original
+            adjusted_contour = largest_contour + [x1, y1]
             
-            if best_box:
-                x, y, w, h = best_box['bbox']
-                ppm = w / self.reference_width_cm
-                
-                print(f"📦 Black reference box found: {w}x{h} pixels")
-                print(f"📏 Aspect ratio: {best_box['aspect_ratio']:.2f}, Solidity: {best_box['solidity']:.2f}")
-                print(f"📐 PPM: {ppm:.2f}")
-                
-                return {
-                    'center': best_box['center'],
-                    'bbox': best_box['bbox'],
-                    'width_pixels': w,
-                    'height_pixels': h,
-                    'ppm': ppm,
-                    'contour': best_box['contour'],
-                    'area': best_box['area'],
-                    'aspect_ratio': best_box['aspect_ratio'],
-                    'solidity': best_box['solidity']
-                }
-            
-            print("⚠️ No suitable black reference box found")
-            return None
+            return self._analyze_contour_measurements(adjusted_contour, roi.shape)
             
         except Exception as e:
-            print(f'❌ Error finding black reference object: {e}')
+            print(f'Error extracting bottle contour: {e}')
             return None
     
-    def extract_bottle_contour(self, image: np.ndarray, yolo_bbox: list) -> Optional[dict]:
+    def _analyze_contour_measurements(self, contour: np.ndarray, roi_shape: tuple) -> dict:
         """
-        Ekstrak kontur botol dalam area yang sudah dideteksi YOLO
+        Analisis pengukuran detail dari kontur
         Args:
-            image: Gambar original
-            yolo_bbox: Bounding box dari YOLO [x1, y1, x2, y2]
+            contour: Kontur yang sudah disesuaikan
+            roi_shape: Ukuran ROI untuk referensi
         Returns:
-            Dict berisi data kontur botol
+            Dict berisi pengukuran detail
         """
         try:
-            x1, y1, x2, y2 = yolo_bbox
+            # Basic measurements
+            area = cv2.contourArea(contour)
+            perimeter = cv2.arcLength(contour, True)
             
-            # Potong area ROI dari deteksi YOLO
-            roi = image[y1:y2, x1:x2]
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            # Bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
             
-            # Preprocessing untuk edge detection
-            blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
-            edges = cv2.Canny(blurred, 50, 150)
+            # Minimum enclosing rectangle (rotated)
+            rect = cv2.minAreaRect(contour)
+            (center_x, center_y), (rect_w, rect_h), angle = rect
             
-            # Morphological operations untuk memperbaiki edge
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+            # Minimum enclosing circle
+            (circle_x, circle_y), radius = cv2.minEnclosingCircle(contour)
             
-            # Cari kontur
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Fit ellipse jika cukup points
+            if len(contour) >= 5:
+                ellipse = cv2.fitEllipse(contour)
+                (ellipse_center, ellipse_axes, ellipse_angle) = ellipse
+                major_axis = max(ellipse_axes)
+                minor_axis = min(ellipse_axes)
+            else:
+                major_axis = max(rect_w, rect_h)
+                minor_axis = min(rect_w, rect_h)
+                ellipse_angle = angle
             
-            if contours:
-                # Ambil kontur terbesar
-                largest_contour = max(contours, key=cv2.contourArea)
-                
-                # Adjust koordinat kembali ke gambar original
-                adjusted_contour = largest_contour + [x1, y1]
-                
-                # Hitung bounding rectangle
-                x, y, w, h = cv2.boundingRect(adjusted_contour)
-                
-                return {
-                    'contour': adjusted_contour,
-                    'bbox': (x, y, w, h),
-                    'area': cv2.contourArea(largest_contour),
-                    'center': (x + w//2, y + h//2),
-                    'height_pixels': h,
-                    'width_pixels': w
-                }
+            # Hull dan solidity
+            hull = cv2.convexHull(contour)
+            hull_area = cv2.contourArea(hull)
+            solidity = area / hull_area if hull_area > 0 else 0
             
-            return None
+            # Aspect ratios
+            aspect_ratio_rect = rect_w / rect_h if rect_h > 0 else 1
+            aspect_ratio_ellipse = major_axis / minor_axis if minor_axis > 0 else 1
             
-        except Exception as e:
-            print(f'❌ Error extracting bottle contour: {e}')
-            return None
-    
-    def calculate_real_dimensions(self, bottle_data: dict, ppm: float) -> dict:
-        """
-        Konversi ukuran pixel ke ukuran real (cm)
-        Args:
-            bottle_data: Data botol dari extract_bottle_contour
-            ppm: Pixels per metric dari reference object
-        Returns:
-            Dict berisi ukuran real dalam cm dan estimasi volume
-        """
-        try:
-            # Konversi pixel ke cm menggunakan PPM
-            height_cm = bottle_data['height_pixels'] / ppm
-            width_cm = bottle_data['width_pixels'] / ppm
-            diameter_cm = width_cm  # Asumsi width = diameter
+            # Extent (ratio of contour area to bounding rectangle area)
+            extent = area / (w * h) if (w * h) > 0 else 0
             
-            # Estimasi volume menggunakan rumus silinder
-            radius_cm = diameter_cm / 2
-            estimated_volume_ml = math.pi * (radius_cm ** 2) * height_cm
+            # Circularity
+            circularity = 4 * math.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
             
-            print(f"📏 Calculated dimensions: {height_cm:.1f}cm H x {diameter_cm:.1f}cm D = {estimated_volume_ml:.0f}mL")
+            # Moments untuk centroid dan orientation
+            moments = cv2.moments(contour)
+            if moments['m00'] != 0:
+                centroid_x = int(moments['m10'] / moments['m00'])
+                centroid_y = int(moments['m01'] / moments['m00'])
+            else:
+                centroid_x, centroid_y = int(center_x), int(center_y)
+            
+            print(f"Contour measurements:")
+            print(f"   Area: {area:.0f} pixels²")
+            print(f"   Perimeter: {perimeter:.0f} pixels")
+            print(f"   Bounding: {w}x{h} pixels")
+            print(f"   Ellipse: {major_axis:.1f}x{minor_axis:.1f} pixels")
+            print(f"   Solidity: {solidity:.3f}")
+            print(f"   Aspect Ratio: {aspect_ratio_ellipse:.2f}")
             
             return {
-                'real_height_cm': round(height_cm, 2),
-                'real_diameter_cm': round(diameter_cm, 2),
-                'estimated_volume_ml': round(estimated_volume_ml, 0)
+                'contour': contour,
+                'measurements': {
+                    'area_pixels': area,
+                    'perimeter_pixels': perimeter,
+                    'bounding_width': w,
+                    'bounding_height': h,
+                    'rect_width': rect_w,
+                    'rect_height': rect_h,
+                    'major_axis': major_axis,
+                    'minor_axis': minor_axis,
+                    'radius': radius,
+                    'solidity': solidity,
+                    'aspect_ratio': aspect_ratio_ellipse,
+                    'extent': extent,
+                    'circularity': circularity,
+                    'angle': ellipse_angle
+                },
+                'centers': {
+                    'bounding': (x + w//2, y + h//2),
+                    'centroid': (centroid_x, centroid_y),
+                    'circle': (int(circle_x), int(circle_y)),
+                    'ellipse': (int(ellipse_center[0]), int(ellipse_center[1]))
+                },
+                'bbox': (x, y, w, h)
             }
             
         except Exception as e:
-            print(f'❌ Error calculating dimensions: {e}')
+            print(f'Error analyzing contour measurements: {e}')
             return {}
     
-    def classify_bottle(self, dimensions: dict, known_specs: dict, tolerance: float = 15) -> dict:
+    def calculate_bottle_dimensions(self, bottle_data: dict) -> dict:
         """
-        Klasifikasi botol berdasarkan volume yang dihitung
+        Hitung dimensi botol berdasarkan pengukuran kontur
         Args:
-            dimensions: Hasil calculate_real_dimensions
-            known_specs: Database spesifikasi botol
-            tolerance: Toleransi perbedaan dalam persen
+            bottle_data: Data hasil analyze_contour_measurements
         Returns:
-            Dict berisi klasifikasi dan confidence
+            Dict berisi dimensi dalam pixel dan estimasi real
+        """
+        try:
+            measurements = bottle_data['measurements']
+            
+            # Ambil dimensi utama
+            height_pixels = measurements['major_axis']  # Tinggi berdasarkan major axis ellipse
+            diameter_pixels = measurements['minor_axis']  # Diameter berdasarkan minor axis ellipse
+            
+            # Alternative measurements
+            height_alt = measurements['bounding_height']
+            width_alt = measurements['bounding_width']
+            
+            # Pilih yang lebih konsisten berdasarkan aspect ratio
+            aspect_ratio = measurements['aspect_ratio']
+            
+            if aspect_ratio > 1.5:  # Botol tegak
+                estimated_height = height_pixels
+                estimated_diameter = diameter_pixels
+            else:  # Botol miring atau pendek
+                estimated_height = max(height_pixels, height_alt)
+                estimated_diameter = min(diameter_pixels, width_alt)
+            
+            # Koreksi berdasarkan solidity (bentuk tidak sempurna)
+            solidity = measurements['solidity']
+            corrected_diameter = estimated_diameter * math.sqrt(solidity)
+            
+            # Volume calculation menggunakan rumus silinder dengan koreksi
+            radius = corrected_diameter / 2
+            volume_cylinder = math.pi * (radius ** 2) * estimated_height
+            
+            # Koreksi volume berdasarkan bentuk nyata
+            # Botol biasanya tidak sempurna silinder (leher mengecil, dll)
+            shape_factor = 0.85  # Faktor koreksi untuk bentuk botol yang tidak sempurna
+            corrected_volume = volume_cylinder * shape_factor * solidity
+            
+            print(f"Calculated dimensions (pixels):")
+            print(f"   Height: {estimated_height:.1f}")
+            print(f"   Diameter: {corrected_diameter:.1f}")
+            print(f"   Volume (cylinder): {volume_cylinder:.0f} cubic pixels")
+            print(f"   Volume (corrected): {corrected_volume:.0f} cubic pixels")
+            
+            return {
+                'height_pixels': estimated_height,
+                'diameter_pixels': corrected_diameter,
+                'raw_diameter_pixels': estimated_diameter,
+                'volume_cubic_pixels': corrected_volume,
+                'raw_volume_cubic_pixels': volume_cylinder,
+                'shape_factor': shape_factor,
+                'solidity_factor': solidity,
+                'aspect_ratio': aspect_ratio,
+                'measurement_confidence': self._calculate_measurement_confidence(measurements)
+            }
+            
+        except Exception as e:
+            print(f'Error calculating dimensions: {e}')
+            return {}
+    
+    def _calculate_measurement_confidence(self, measurements: dict) -> float:
+        """
+        Hitung confidence score berdasarkan kualitas pengukuran
+        Args:
+            measurements: Dict pengukuran kontur
+        Returns:
+            Confidence score 0.0-1.0
+        """
+        try:
+            # Faktor-faktor yang mempengaruhi confidence
+            solidity = measurements.get('solidity', 0)
+            circularity = measurements.get('circularity', 0)
+            extent = measurements.get('extent', 0)
+            aspect_ratio = measurements.get('aspect_ratio', 1)
+            
+            # Score berdasarkan solidity (0.6-1.0 = good)
+            solidity_score = min(solidity / 0.6, 1.0) if solidity >= 0.3 else 0
+            
+            # Score berdasarkan aspect ratio (botol biasanya 1.5-4.0)
+            if 1.5 <= aspect_ratio <= 4.0:
+                aspect_score = 1.0
+            elif 1.0 <= aspect_ratio < 1.5:
+                aspect_score = (aspect_ratio - 1.0) / 0.5
+            else:
+                aspect_score = max(0, 1.0 - abs(aspect_ratio - 2.5) / 2.5)
+            
+            # Score berdasarkan extent (seberapa penuh bounding box)
+            extent_score = min(extent / 0.5, 1.0) if extent >= 0.2 else 0
+            
+            # Kombinasi weighted
+            total_confidence = (
+                solidity_score * 0.4 +
+                aspect_score * 0.4 +
+                extent_score * 0.2
+            )
+            
+            return min(max(total_confidence, 0.0), 1.0)
+            
+        except Exception as e:
+            print(f'Error calculating confidence: {e}')
+            return 0.5
+    
+    def estimate_real_dimensions_from_context(self, dimensions: dict) -> dict:
+        """
+        Estimasi ukuran real berdasarkan konteks pengukuran yang lebih akurat
+        """
+        try:
+            height_pixels = dimensions['height_pixels']
+            diameter_pixels = dimensions['diameter_pixels']
+            volume_pixels = dimensions['volume_cubic_pixels']
+            confidence = dimensions['measurement_confidence']
+            aspect_ratio = dimensions['aspect_ratio']
+            
+            # Scale estimation yang lebih konservatif dan realistis
+            
+            # Untuk botol dengan aspect ratio tinggi (botol tegak)
+            if aspect_ratio > 2.0:  # Botol tegak
+                # Asumsi tinggi botol normal: 15-25cm
+                typical_height_cm = 20.0
+                estimated_scale = height_pixels / typical_height_cm
+            else:  # Botol miring atau pendek
+                # Asumsi diameter botol normal: 6-8cm
+                typical_diameter_cm = 7.0
+                estimated_scale = diameter_pixels / typical_diameter_cm
+            
+            # Batas scale yang masuk akal
+            # Scale biasanya antara 5-50 pixels per cm
+            if estimated_scale < 5:
+                estimated_scale = 5
+            elif estimated_scale > 50:
+                estimated_scale = 50
+            
+            # Konversi ke real dimensions
+            real_height_cm = height_pixels / estimated_scale
+            real_diameter_cm = diameter_pixels / estimated_scale
+            
+            # Volume dengan batas yang realistis
+            real_volume_ml = volume_pixels / (estimated_scale ** 3)
+            
+            # Batasi volume dalam range yang masuk akal (50-2000mL)
+            if real_volume_ml < 50:
+                real_volume_ml = 50
+            elif real_volume_ml > 2000:
+                real_volume_ml = 2000
+            
+            # Diameter juga dibatasi (3-12cm untuk botol normal)
+            if real_diameter_cm < 3:
+                real_diameter_cm = 3
+            elif real_diameter_cm > 12:
+                real_diameter_cm = 12
+            
+            # Height dibatasi (8-35cm untuk botol normal)
+            if real_height_cm < 8:
+                real_height_cm = 8
+            elif real_height_cm > 35:
+                real_height_cm = 35
+            
+            print(f"Improved scale estimation:")
+            print(f"   Estimated scale: {estimated_scale:.2f} pixels/cm")
+            print(f"   Real height: {real_height_cm:.1f} cm")
+            print(f"   Real diameter: {real_diameter_cm:.1f} cm")
+            print(f"   Real volume: {real_volume_ml:.0f} mL")
+            
+            return {
+                'real_height_cm': round(real_height_cm, 2),
+                'real_diameter_cm': round(real_diameter_cm, 2),
+                'estimated_volume_ml': round(real_volume_ml, 0),
+                'estimated_scale_ppm': round(estimated_scale, 2),
+                'measurement_confidence': round(confidence * 100, 1),
+                'scale_confidence': 'improved'
+            }
+            
+        except Exception as e:
+            print(f'Error estimating real dimensions: {e}')
+            return {}
+    
+    def classify_bottle(self, dimensions: dict, known_specs: dict, tolerance: float = 25) -> dict:
+        """
+        Klasifikasi botol berdasarkan volume yang dihitung dari pengukuran
         """
         try:
             estimated_volume = dimensions.get('estimated_volume_ml', 0)
+            confidence_factor = dimensions.get('measurement_confidence', 0) / 100
             
             best_match = None
             min_difference = float('inf')
@@ -253,237 +401,73 @@ class OpenCVSizeCalculator:
                     best_match = bottle_type
             
             if best_match:
-                confidence = max(0, 100 - (min_difference / known_specs[best_match]['volume']) * 100)
-                print(f"🎯 Classification: {best_match} ({confidence:.1f}% confidence)")
+                volume_confidence = max(0, 100 - (min_difference / known_specs[best_match]['volume']) * 100)
+                final_confidence = (volume_confidence * 0.7) + (confidence_factor * 100 * 0.3)
+                
+                print(f"Classification: {best_match} ({final_confidence:.1f}% confidence)")
                 return {
                     'classification': best_match,
-                    'confidence_percent': round(confidence, 2)
+                    'confidence_percent': round(final_confidence, 2),
+                    'volume_match_percent': round(volume_confidence, 2),
+                    'measurement_quality': round(confidence_factor * 100, 2)
                 }
             else:
-                print(f"❓ No match found for {estimated_volume}mL")
+                print(f"No match found for {estimated_volume}mL")
                 return {
                     'classification': 'Unknown',
-                    'confidence_percent': 0
+                    'confidence_percent': 0,
+                    'measurement_quality': round(confidence_factor * 100, 2)
                 }
                 
         except Exception as e:
-            print(f'❌ Error in classification: {e}')
+            print(f'Error in classification: {e}')
             return {'classification': 'Error', 'confidence_percent': 0}
     
-    def draw_reference_detection(self, image: np.ndarray, reference_data: dict) -> np.ndarray:
+    def draw_detailed_analysis(self, image: np.ndarray, bottle_data: dict, dimensions: dict, real_dims: dict) -> np.ndarray:
         """
-        Gambar deteksi reference object (kotak hitam) pada gambar
-        Args:
-            image: Gambar original
-            reference_data: Data reference object
-        Returns:
-            Gambar dengan annotasi reference object
+        Gambar analisis detail pada gambar
         """
         result_image = image.copy()
         
         try:
-            # Gambar bounding box kotak referensi dengan warna yang kontras (kuning)
-            x, y, w, h = reference_data['bbox']
-            cv2.rectangle(result_image, (x, y), (x + w, y + h), (0, 255, 255), 3)  # Kuning, lebih tebal
+            # Gambar kontur utama
+            cv2.drawContours(result_image, [bottle_data['contour']], -1, (0, 255, 255), 2)
             
-            # Gambar kontur jika ada
-            if 'contour' in reference_data:
-                cv2.drawContours(result_image, [reference_data['contour']], -1, (0, 255, 255), 2)
+            # Gambar bounding box
+            x, y, w, h = bottle_data['bbox']
+            cv2.rectangle(result_image, (x, y), (x + w, y + h), (255, 0, 255), 2)
             
-            # Tambah label dengan background untuk kontras
-            label = f'Black Box: {self.reference_width_cm}cm'
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            # Gambar center points
+            centers = bottle_data['centers']
+            colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0)]
+            names = ['bounding', 'centroid', 'circle', 'ellipse']
             
-            # Background putih untuk text
-            cv2.rectangle(result_image, (x, y - 30), (x + label_size[0] + 10, y - 5), (255, 255, 255), -1)
-            cv2.putText(result_image, label, (x + 5, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+            for i, (name, center) in enumerate(centers.items()):
+                cv2.circle(result_image, center, 3, colors[i], -1)
+                cv2.putText(result_image, name[:3], (center[0]+5, center[1]-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, colors[i], 1)
             
-            # Info PPM dan akurasi
-            info_labels = [
-                f'PPM: {reference_data["ppm"]:.1f}',
-                f'Ratio: {reference_data["aspect_ratio"]:.2f}',
-                f'Solid: {reference_data["solidity"]:.2f}'
+            # Info panel dengan pengukuran detail
+            info_lines = [
+                f"Measured: {real_dims.get('real_height_cm', 0):.1f}cm x {real_dims.get('real_diameter_cm', 0):.1f}cm",
+                f"Volume: {real_dims.get('estimated_volume_ml', 0):.0f}mL",
+                f"Confidence: {real_dims.get('measurement_confidence', 0):.1f}%",
+                f"Solidity: {dimensions.get('solidity_factor', 0):.2f}",
+                f"Aspect: {dimensions.get('aspect_ratio', 0):.2f}",
+                f"Scale: {real_dims.get('estimated_scale_ppm', 0):.1f} px/cm"
             ]
             
-            for i, info_label in enumerate(info_labels):
-                info_size = cv2.getTextSize(info_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
-                info_y = y + h + 15 + (i * 15)
-                cv2.rectangle(result_image, (x, info_y - 10), (x + info_size[0] + 5, info_y + 5), (255, 255, 255), -1)
-                cv2.putText(result_image, info_label, (x + 2, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+            # Background untuk info panel
+            panel_height = len(info_lines) * 20 + 20
+            cv2.rectangle(result_image, (x, y - panel_height - 10), (x + 350, y - 5), (0, 0, 0), -1)
+            cv2.rectangle(result_image, (x, y - panel_height - 10), (x + 350, y - 5), (255, 255, 255), 2)
+            
+            # Gambar text info
+            for i, line in enumerate(info_lines):
+                cv2.putText(result_image, line, (x + 5, y - panel_height + 15 + (i * 20)), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
         except Exception as e:
-            print(f'Error drawing reference detection: {e}')
-        
-        return result_image
-    
-    def extract_bottle_contour(self, image: np.ndarray, yolo_bbox: list) -> Optional[dict]:
-        """
-        Ekstrak kontur botol dalam area yang sudah dideteksi YOLO
-        Args:
-            image: Gambar original
-            yolo_bbox: Bounding box dari YOLO [x1, y1, x2, y2]
-        Returns:
-            Dict berisi data kontur botol
-        """
-        try:
-            x1, y1, x2, y2 = yolo_bbox
-            
-            # Potong area ROI dari deteksi YOLO
-            roi = image[y1:y2, x1:x2]
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            
-            # Preprocessing untuk edge detection
-            blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
-            edges = cv2.Canny(blurred, 50, 150)
-            
-            # Morphological operations untuk memperbaiki edge
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-            
-            # Cari kontur
-            contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Ambil kontur terbesar
-                largest_contour = max(contours, key=cv2.contourArea)
-                
-                # Adjust koordinat kembali ke gambar original
-                adjusted_contour = largest_contour + [x1, y1]
-                
-                # Hitung bounding rectangle
-                x, y, w, h = cv2.boundingRect(adjusted_contour)
-                
-                return {
-                    'contour': adjusted_contour,
-                    'bbox': (x, y, w, h),
-                    'area': cv2.contourArea(largest_contour),
-                    'center': (x + w//2, y + h//2),
-                    'height_pixels': h,
-                    'width_pixels': w
-                }
-            
-            return None
-            
-        except Exception as e:
-            print(f'❌ Error extracting bottle contour: {e}')
-            return None
-    
-    def calculate_real_dimensions(self, bottle_data: dict, ppm: float) -> dict:
-        """
-        Konversi ukuran pixel ke ukuran real (cm)
-        Args:
-            bottle_data: Data botol dari extract_bottle_contour
-            ppm: Pixels per metric dari reference object
-        Returns:
-            Dict berisi ukuran real dalam cm dan estimasi volume
-        """
-        try:
-            # Konversi pixel ke cm menggunakan PPM
-            height_cm = bottle_data['height_pixels'] / ppm
-            width_cm = bottle_data['width_pixels'] / ppm
-            diameter_cm = width_cm  # Asumsi width = diameter
-            
-            # Estimasi volume menggunakan rumus silinder
-            radius_cm = diameter_cm / 2
-            estimated_volume_ml = math.pi * (radius_cm ** 2) * height_cm
-            
-            print(f"📏 Calculated dimensions: {height_cm:.1f}cm H x {diameter_cm:.1f}cm D = {estimated_volume_ml:.0f}mL")
-            
-            return {
-                'real_height_cm': round(height_cm, 2),
-                'real_diameter_cm': round(diameter_cm, 2),
-                'estimated_volume_ml': round(estimated_volume_ml, 0)
-            }
-            
-        except Exception as e:
-            print(f'❌ Error calculating dimensions: {e}')
-            return {}
-    
-    def classify_bottle(self, dimensions: dict, known_specs: dict, tolerance: float = 15) -> dict:
-        """
-        Klasifikasi botol berdasarkan volume yang dihitung
-        Args:
-            dimensions: Hasil calculate_real_dimensions
-            known_specs: Database spesifikasi botol
-            tolerance: Toleransi perbedaan dalam persen
-        Returns:
-            Dict berisi klasifikasi dan confidence
-        """
-        try:
-            estimated_volume = dimensions.get('estimated_volume_ml', 0)
-            
-            best_match = None
-            min_difference = float('inf')
-            
-            # Cari match terbaik berdasarkan volume
-            for bottle_type, specs in known_specs.items():
-                volume_diff = abs(estimated_volume - specs['volume'])
-                volume_diff_percent = (volume_diff / specs['volume']) * 100
-                
-                if volume_diff_percent <= tolerance and volume_diff < min_difference:
-                    min_difference = volume_diff
-                    best_match = bottle_type
-            
-            if best_match:
-                confidence = max(0, 100 - (min_difference / known_specs[best_match]['volume']) * 100)
-                print(f"🎯 Classification: {best_match} ({confidence:.1f}% confidence)")
-                return {
-                    'classification': best_match,
-                    'confidence_percent': round(confidence, 2)
-                }
-            else:
-                print(f"❓ No match found for {estimated_volume}mL")
-                return {
-                    'classification': 'Unknown',
-                    'confidence_percent': 0
-                }
-                
-        except Exception as e:
-            print(f'❌ Error in classification: {e}')
-            return {'classification': 'Error', 'confidence_percent': 0}
-    
-    def draw_reference_detection(self, image: np.ndarray, reference_data: dict) -> np.ndarray:
-        """
-        Gambar deteksi reference object (kotak hitam) pada gambar
-        Args:
-            image: Gambar original
-            reference_data: Data reference object
-        Returns:
-            Gambar dengan annotasi reference object
-        """
-        result_image = image.copy()
-        
-        try:
-            # Gambar bounding box kotak referensi dengan warna yang kontras (kuning)
-            x, y, w, h = reference_data['bbox']
-            cv2.rectangle(result_image, (x, y), (x + w, y + h), (0, 255, 255), 3)  # Kuning, lebih tebal
-            
-            # Gambar kontur jika ada
-            if 'contour' in reference_data:
-                cv2.drawContours(result_image, [reference_data['contour']], -1, (0, 255, 255), 2)
-            
-            # Tambah label dengan background untuk kontras
-            label = f'Black Box: {self.reference_width_cm}cm'
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-            
-            # Background putih untuk text
-            cv2.rectangle(result_image, (x, y - 30), (x + label_size[0] + 10, y - 5), (255, 255, 255), -1)
-            cv2.putText(result_image, label, (x + 5, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-            
-            # Info PPM dan akurasi
-            info_labels = [
-                f'PPM: {reference_data["ppm"]:.1f}',
-                f'Ratio: {reference_data["aspect_ratio"]:.2f}',
-                f'Solid: {reference_data["solidity"]:.2f}'
-            ]
-            
-            for i, info_label in enumerate(info_labels):
-                info_size = cv2.getTextSize(info_label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
-                info_y = y + h + 15 + (i * 15)
-                cv2.rectangle(result_image, (x, info_y - 10), (x + info_size[0] + 5, info_y + 5), (255, 255, 255), -1)
-                cv2.putText(result_image, info_label, (x + 2, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-            
-        except Exception as e:
-            print(f'Error drawing reference detection: {e}')
+            print(f'Error drawing detailed analysis: {e}')
         
         return result_image

@@ -16,9 +16,8 @@ class Settings:
     YOLO_CONFIDENCE = 0.5
     YOLO_DEVICE = "cpu"
     
-    # OpenCV Settings
-    REFERENCE_OBJECT_WIDTH_CM = 5.0  # Ukuran kotak referensi dalam cm (ganti dari 2.4)
-    CLASSIFICATION_TOLERANCE_PERCENT = 15
+    # OpenCV Settings (Measurement-based)
+    CLASSIFICATION_TOLERANCE_PERCENT = 25  # Toleransi untuk pengukuran
     
     # Bottle specifications
     KNOWN_BOTTLE_SPECS = {
